@@ -1,0 +1,347 @@
+import { readdirSync, statSync, readFileSync, mkdirSync, existsSync } from 'fs';
+import { join, basename, extname } from 'path';
+import { SyncClient } from './syncClient';
+import { SyncableCollection } from './syncableCollection';
+import { MediaSyncClient } from './mediaSyncClient';
+import { hasFlashcardsTag, extractFlashcards, convertImagesToHtml } from './flashcardParser';
+import { initZstd } from './httpSyncClient';
+import { initSql } from './syncableCollection';
+import { AnkiSyncSettings } from './settings';
+import { SyncActionRequired, SyncResult } from './types';
+
+// ---------------------------------------------------------------------------
+// SyncManager
+// Orchestrates the full obsidian → anki sync flow.
+// Mirrors Python main.py sync_flashcards_to_anki / main.
+// ---------------------------------------------------------------------------
+
+export class SyncManager {
+	private settings: AnkiSyncSettings;
+	private pluginDir: string;
+
+	constructor(settings: AnkiSyncSettings, pluginDir: string) {
+		this.settings = settings;
+		this.pluginDir = pluginDir;
+	}
+
+	get tmpDir(): string {
+		return join(this.pluginDir, 'tmp');
+	}
+
+	get collectionPath(): string {
+		return join(this.tmpDir, 'collection.anki2');
+	}
+
+	get mediaDir(): string {
+		return join(this.tmpDir, 'collection.media');
+	}
+
+	get mediaDbPath(): string {
+		return join(this.tmpDir, 'media.db');
+	}
+
+	// -------------------------------------------------------------------------
+	// Main entry point
+	// -------------------------------------------------------------------------
+
+	async sync(vaultDir: string): Promise<SyncResult> {
+		let { ankiEndpoint, username, password, flashcardsTag, deckPrefix, deleteRemovedCards } = this.settings;
+
+		console.log('[ankisync] sync() called');
+		console.log('[ankisync] pluginDir:', this.pluginDir);
+		console.log('[ankisync] vaultDir:', vaultDir);
+		console.log('[ankisync] endpoint (raw):', ankiEndpoint);
+		console.log('[ankisync] username:', username);
+		console.log('[ankisync] password set:', !!password);
+
+		if (!username || !password) {
+			throw new Error('Anki credentials are not configured. Please set username and password in plugin settings.');
+		}
+
+		// Normalise endpoint: ensure it has a scheme and trailing slash
+		ankiEndpoint = ankiEndpoint.trim();
+		if (!ankiEndpoint) {
+			throw new Error('Anki server URL is not configured. Please set it in plugin settings.');
+		}
+		if (!/^https?:\/\//i.test(ankiEndpoint)) {
+			ankiEndpoint = 'https://' + ankiEndpoint;
+		}
+		if (!ankiEndpoint.endsWith('/')) {
+			ankiEndpoint += '/';
+		}
+		console.log('[ankisync] endpoint (normalised):', ankiEndpoint);
+
+		// Validate the URL early to give a clear error
+		try {
+			new URL(ankiEndpoint);
+			console.log('[ankisync] endpoint URL valid');
+		} catch (e) {
+			throw new Error(`Invalid Anki server URL: "${ankiEndpoint}". Example: https://ankiweb.thonis.fr/`);
+		}
+
+		// --- Step 1: initialise zstd + sql.js WASM from plugin dir ---
+		const wasmPath = join(this.pluginDir, 'zstd.wasm');
+		const sqlWasmPath = join(this.pluginDir, 'sql-wasm.wasm');
+		console.log('[ankisync] wasmPath:', wasmPath);
+		console.log('[ankisync] sqlWasmPath:', sqlWasmPath);
+		console.log('[ankisync] wasm exists:', existsSync(wasmPath));
+		console.log('[ankisync] sql wasm exists:', existsSync(sqlWasmPath));
+		await initZstd(wasmPath);
+		await initSql(sqlWasmPath);
+		console.log('[ankisync] zstd + sql.js WASM initialised');
+
+		// --- Step 2: login ---
+		console.log('[ankisync] logging in...');
+		const auth = await SyncClient.login(username, password, ankiEndpoint);
+		console.log('[ankisync] login OK, hkey:', auth.hkey.slice(0, 8) + '...');
+
+		// --- Step 3: ensure tmp dir exists ---
+		mkdirSync(this.tmpDir, { recursive: true });
+		mkdirSync(this.mediaDir, { recursive: true });
+
+		// --- Step 4: open or download collection ---
+		// Compare local collection state with server meta to decide whether
+		// a full download is needed (first run, or server schema changed, or
+		// another client synced ahead of us).
+		const syncClient = new SyncClient(auth);
+		let col: SyncableCollection;
+
+		if (!existsSync(this.collectionPath)) {
+			// First run — no local collection yet
+			console.log('[ankisync] first run: downloading collection from server...');
+			col = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
+			await syncClient.fullDownload(col);
+			col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
+			console.log('[ankisync] collection downloaded OK');
+		} else {
+			// Subsequent run — check if server has changed since our last sync
+			col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
+			const localMeta = col.syncMeta();
+			const serverMeta = await syncClient.fetchServerMeta();
+			console.log(`[ankisync] local usn=${localMeta.usn} scm=${localMeta.scm} | server usn=${serverMeta.usn} scm=${serverMeta.scm}`);
+
+		if (localMeta.scm !== serverMeta.scm) {
+			// Schema mismatch — must full download
+			console.log('[ankisync] schema mismatch: full download required');
+			console.log('[ankisync] collectionPath:', this.collectionPath);
+			col.close();
+			console.log('[ankisync] creating empty collection...');
+			col = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
+			console.log('[ankisync] empty collection created, starting fullDownload...');
+			await syncClient.fullDownload(col);
+			console.log('[ankisync] fullDownload done, re-opening from disk...');
+			col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
+			const reloadedMeta = col.syncMeta();
+			console.log(`[ankisync] re-opened: usn=${reloadedMeta.usn} scm=${reloadedMeta.scm} mod=${reloadedMeta.mod}`);
+			console.log('[ankisync] collection re-downloaded OK');
+		} else if (serverMeta.usn !== localMeta.usn) {
+			// Server has new changes from another client — full download to get them
+			console.log(`[ankisync] server ahead (usn ${localMeta.usn} → ${serverMeta.usn}): downloading latest...`);
+			console.log('[ankisync] collectionPath:', this.collectionPath);
+			col.close();
+			col = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
+			await syncClient.fullDownload(col);
+			console.log('[ankisync] fullDownload done, re-opening from disk...');
+			col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
+			const reloadedMeta2 = col.syncMeta();
+			console.log(`[ankisync] re-opened: usn=${reloadedMeta2.usn} scm=${reloadedMeta2.scm} mod=${reloadedMeta2.mod}`);
+			console.log('[ankisync] collection updated OK');
+		} else {
+			console.log('[ankisync] local collection up to date, skipping download');
+		}
+		}
+
+		// --- Step 4: find all flashcard files ---
+		const mdFiles = this.findFlashcardFiles(vaultDir, flashcardsTag);
+
+		// --- Step 5: parse all flashcards and gather media ---
+		const cardsByFile = new Map<string, { front: string; back: string }[]>();
+		const allMedia: Array<{ ref: string; absolutePath: string }> = [];
+
+		for (const filePath of mdFiles) {
+			const content = readFileSync(filePath, 'utf8');
+			const rawCards = extractFlashcards(content, filePath, vaultDir);
+
+			const processedCards: { front: string; back: string }[] = [];
+			for (const card of rawCards) {
+				// Convert image references to <img> HTML and collect media
+				const front = convertImagesToHtml(card.front, filePath, vaultDir, allMedia);
+				const back = convertImagesToHtml(card.back, filePath, vaultDir, allMedia);
+				processedCards.push({ front, back });
+			}
+			if (processedCards.length > 0) {
+				cardsByFile.set(filePath, processedCards);
+			}
+		}
+
+		// --- Step 6: copy media files into collection.media ---
+		for (const { ref, absolutePath } of allMedia) {
+			try {
+				col.addMedia(absolutePath, basename(ref));
+			} catch (err) {
+				console.warn(`obsidian-ankisync: could not add media ${ref}:`, err);
+			}
+		}
+
+		// --- Step 7: diff and apply changes ---
+		const result: SyncResult = { added: 0, updated: 0, deleted: 0 };
+		const notetypeId = col.getOrCreateBasicNotetype();
+
+		// Track which deck names are managed by this plugin (for delete logic)
+		const managedDeckNames = new Set<string>();
+
+		for (const [filePath, cards] of cardsByFile) {
+			const stem = basename(filePath, extname(filePath));
+			const deckName = `${deckPrefix}${stem}`;
+			managedDeckNames.add(deckName);
+
+			const deckId = col.createDeck(deckName);
+			const existingNotes = col.getNotesInDeck(deckId);
+
+			// Build lookup: front → noteId for existing notes
+			const existingByFront = new Map<string, { id: number; back: string }>();
+			for (const [id, note] of existingNotes) {
+				existingByFront.set(note.front, { id, back: note.back });
+			}
+
+			// Track which fronts are in the vault (to detect deletions)
+			const vaultFronts = new Set<string>();
+
+			for (const { front, back } of cards) {
+				vaultFronts.add(front);
+				const existing = existingByFront.get(front);
+				if (!existing) {
+					// New card
+					col.addNote(front, back, deckId, notetypeId);
+					result.added++;
+				} else if (existing.back !== back) {
+					// Updated card
+					col.updateNote(existing.id, front, back);
+					result.updated++;
+				}
+				// else: unchanged — nothing to do
+			}
+
+			// Deletions: notes in Anki not present in vault
+			if (deleteRemovedCards) {
+				for (const [front, { id }] of existingByFront) {
+					if (!vaultFronts.has(front)) {
+						col.deleteNote(id);
+						result.deleted++;
+					}
+				}
+			}
+		}
+
+		// Also delete notes in decks that no longer have any flashcard source file
+		if (deleteRemovedCards) {
+			// (handled above per file — if a file is removed it won't appear in cardsByFile)
+			// Orphaned managed decks: we don't auto-delete the whole deck, just the cards
+			// that were removed (already handled). Deck stays as empty container.
+		}
+
+		// --- Step 8: sync with server ---
+		const preSyncMeta = col.syncMeta();
+		console.log(`[ankisync] pre-sync local: usn=${preSyncMeta.usn} scm=${preSyncMeta.scm} mod=${preSyncMeta.mod}`);
+		let action = await syncClient.sync(col);
+		console.log(`obsidian-ankisync: sync action = ${action}`);
+
+		if (action === SyncActionRequired.FULL_SYNC) {
+			// Schema mismatch — the server's collection has a different schema than ours.
+			// Re-download the server's collection, re-apply vault changes on top, then
+			// sync again. This preserves the server's schema (e.g. AnkiDroid v1 format).
+			console.log('[ankisync] FULL_SYNC required: re-downloading server collection...');
+			col.close();
+			const freshCol = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
+			await syncClient.fullDownload(freshCol);
+			col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
+			console.log('[ankisync] re-downloaded OK, re-applying vault changes...');
+
+			// Re-apply vault changes on the freshly downloaded collection
+			const notetypeId2 = col.getOrCreateBasicNotetype();
+			for (const [filePath, cards] of cardsByFile) {
+				const stem = basename(filePath, extname(filePath));
+				const deckName = `${deckPrefix}${stem}`;
+				const deckId = col.createDeck(deckName);
+				const existingNotes = col.getNotesInDeck(deckId);
+				const existingByFront = new Map<string, { id: number; back: string }>();
+				for (const [id, note] of existingNotes) {
+					existingByFront.set(note.front, { id, back: note.back });
+				}
+				const vaultFronts = new Set<string>();
+				for (const { front, back } of cards) {
+					vaultFronts.add(front);
+					const existing = existingByFront.get(front);
+					if (!existing) {
+						col.addNote(front, back, deckId, notetypeId2);
+					} else if (existing.back !== back) {
+						col.updateNote(existing.id, front, back);
+					}
+				}
+				if (deleteRemovedCards) {
+					for (const [front, { id }] of existingByFront) {
+						if (!vaultFronts.has(front)) col.deleteNote(id);
+					}
+				}
+			}
+
+			// Now do a normal sync — schema matches so it should be NORMAL_SYNC
+			action = await syncClient.sync(col);
+			console.log(`obsidian-ankisync: retry sync action = ${action}`);
+		}
+
+		// --- Step 9: media sync (if any media was added) ---
+		if (allMedia.length > 0 || action !== SyncActionRequired.NO_CHANGES) {
+			const mediaClient = new MediaSyncClient(auth, this.mediaDir, this.mediaDbPath);
+			try {
+				await mediaClient.open();
+				const mediaResult = await mediaClient.sync();
+				console.log(`obsidian-ankisync: media sync: downloaded=${mediaResult.downloaded} uploaded=${mediaResult.uploaded} deleted=${mediaResult.deleted}`);
+			} catch (err) {
+				console.warn('obsidian-ankisync: media sync failed:', err);
+			} finally {
+				mediaClient.close();
+			}
+		}
+
+		col.close();
+		return result;
+	}
+
+	// -------------------------------------------------------------------------
+	// Find flashcard files
+	// -------------------------------------------------------------------------
+
+	/** Recursively find all .md files in vaultDir that have the flashcards tag. */
+	private findFlashcardFiles(vaultDir: string, tag: string): string[] {
+		const files: string[] = [];
+		this.walkDir(vaultDir, files, tag);
+		return files;
+	}
+
+	private walkDir(dir: string, results: string[], tag: string): void {
+		let entries: string[];
+		try {
+			entries = readdirSync(dir);
+		} catch {
+			return;
+		}
+		for (const entry of entries) {
+			if (entry.startsWith('.') || entry === 'node_modules') continue;
+			const full = join(dir, entry);
+			try {
+				const stat = statSync(full);
+				if (stat.isDirectory()) {
+					this.walkDir(full, results, tag);
+				} else if (entry.endsWith('.md')) {
+					const content = readFileSync(full, 'utf8');
+					if (hasFlashcardsTag(content, tag)) {
+						results.push(full);
+					}
+				}
+			} catch {
+				// skip unreadable entries
+			}
+		}
+	}
+}

@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Test vault (local dev only)
+test-vault/
+
+# Build output (distributed via GitHub Release, not committed)
+main.js
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

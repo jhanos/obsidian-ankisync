@@ -1,0 +1,10 @@
+{
+	"id": "obsidian-ankisync",
+	"name": "Anki Sync",
+	"version": "0.1.0",
+	"minAppVersion": "0.15.0",
+	"description": "Sync flashcards from Obsidian notes tagged #flashcards to a remote Anki server",
+	"author": "jhanos",
+	"authorUrl": "https://github.com/jhanos",
+	"isDesktopOnly": true
+}
