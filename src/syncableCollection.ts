@@ -287,16 +287,10 @@ export class SyncableCollection {
 
 	/** Write the in-memory database back to disk. */
 	flush(): void {
-		console.log('[ankisync] flush() called, dbPath:', this.dbPath);
 		const exported = Buffer.from(this.db.export());
-		console.log('[ankisync] flush() exported bytes:', exported.length);
-		// Restore original Anki collation name so native Anki clients can read
-		// the file without schema confusion. sql.js works with 'NOCASE ' in
-		// memory; on disk Anki expects the original 'unicase' collation string.
 		const data = unpatchUnicase(exported);
 		try {
 			writeFileSync(this.dbPath, data);
-			console.log('[ankisync] flush() writeFileSync OK, wrote', data.length, 'bytes to', this.dbPath);
 		} catch (err) {
 			console.error('[ankisync] flush() writeFileSync FAILED:', err);
 			throw err;
@@ -755,20 +749,10 @@ export class SyncableCollection {
 
 	/** Replace collection with downloaded bytes. */
 	replaceWithFullDownload(data: Buffer): void {
-		console.log('[ankisync] replaceWithFullDownload() called, bytes:', data.length, 'dbPath:', this.dbPath);
 		this.db.close();
-		// Write original server bytes to disk (preserving Anki's 'unicase' collation).
-		try {
-			writeFileSync(this.dbPath, data);
-			console.log('[ankisync] replaceWithFullDownload() writeFileSync OK, wrote', data.length, 'bytes to', this.dbPath);
-		} catch (err) {
-			console.error('[ankisync] replaceWithFullDownload() writeFileSync FAILED:', err);
-			throw err;
-		}
-		// Load the patched version into memory so sql.js can work with it.
+		writeFileSync(this.dbPath, data);
 		const sql = SQL!;
 		this.db = new sql.Database(patchUnicase(data));
-		console.log('[ankisync] replaceWithFullDownload() db loaded into memory OK');
 	}
 
 	// -------------------------------------------------------------------------

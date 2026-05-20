@@ -22,14 +22,10 @@ import {
 let zstdReady: Promise<void> | null = null;
 
 export function initZstd(wasmPath: string): Promise<void> {
-	console.log('[ankisync] initZstd called with path:', wasmPath);
 	if (!zstdReady) {
 		zstdReady = (async () => {
-			console.log('[ankisync] reading wasm bytes from:', wasmPath);
 			const buf = readFileSync(wasmPath);
-			console.log('[ankisync] wasm bytes read, size:', buf.length);
 			await initZstdWasm(buf);
-			console.log('[ankisync] zstd WASM initialised OK');
 		})().catch((e: unknown) => {
 			console.error('[ankisync] zstdInit FAILED:', e);
 			zstdReady = null;
@@ -242,7 +238,6 @@ export class HttpSyncClient {
 		await ensureZstd();
 		const compressed = Buffer.from(compress(new Uint8Array(body)));
 		const endpoint = this.auth.endpoint.replace(/\/$/, '');
-		console.log(`[ankisync] postRaw ${prefix}/${method} endpoint="${endpoint}"`);
 		if (!endpoint || !/^https?:\/\//i.test(endpoint)) {
 			throw new SyncError(`Invalid endpoint URL: "${endpoint}". Ensure the Anki server URL starts with https:// or http://`);
 		}
@@ -252,7 +247,6 @@ export class HttpSyncClient {
 		} catch (e) {
 			throw new SyncError(`Failed to construct URL from endpoint="${endpoint}" prefix="${prefix}" method="${method}": ${e}`);
 		}
-		console.log(`[ankisync] postRaw URL: ${url.toString()}`);
 
 		const headers: Record<string, string> = {
 			'Content-Type': 'application/octet-stream',
@@ -266,7 +260,6 @@ export class HttpSyncClient {
 		};
 
 		const raw = await doRequest(url, headers, compressed, this.auth.ioTimeoutSecs * 1000);
-		console.log(`[ankisync] postRaw ${prefix}/${method} response status=${raw.statusCode} size=${raw.body.length}`);
 		return decompressResponse(raw.body, raw.headers);
 	}
 }

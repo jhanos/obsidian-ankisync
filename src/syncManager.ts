@@ -47,13 +47,6 @@ export class SyncManager {
 	async sync(vaultDir: string): Promise<SyncResult> {
 		let { ankiEndpoint, username, password, flashcardsTag, deckPrefix, deleteRemovedCards } = this.settings;
 
-		console.log('[ankisync] sync() called');
-		console.log('[ankisync] pluginDir:', this.pluginDir);
-		console.log('[ankisync] vaultDir:', vaultDir);
-		console.log('[ankisync] endpoint (raw):', ankiEndpoint);
-		console.log('[ankisync] username:', username);
-		console.log('[ankisync] password set:', !!password);
-
 		if (!username || !password) {
 			throw new Error('Anki credentials are not configured. Please set username and password in plugin settings.');
 		}
@@ -69,12 +62,10 @@ export class SyncManager {
 		if (!ankiEndpoint.endsWith('/')) {
 			ankiEndpoint += '/';
 		}
-		console.log('[ankisync] endpoint (normalised):', ankiEndpoint);
 
 		// Validate the URL early to give a clear error
 		try {
 			new URL(ankiEndpoint);
-			console.log('[ankisync] endpoint URL valid');
 		} catch (e) {
 			throw new Error(`Invalid Anki server URL: "${ankiEndpoint}". Example: https://ankiweb.thonis.fr/`);
 		}
@@ -82,37 +73,25 @@ export class SyncManager {
 		// --- Step 1: initialise zstd + sql.js WASM from plugin dir ---
 		const wasmPath = join(this.pluginDir, 'zstd.wasm');
 		const sqlWasmPath = join(this.pluginDir, 'sql-wasm.wasm');
-		console.log('[ankisync] wasmPath:', wasmPath);
-		console.log('[ankisync] sqlWasmPath:', sqlWasmPath);
-		console.log('[ankisync] wasm exists:', existsSync(wasmPath));
-		console.log('[ankisync] sql wasm exists:', existsSync(sqlWasmPath));
 		await initZstd(wasmPath);
 		await initSql(sqlWasmPath);
-		console.log('[ankisync] zstd + sql.js WASM initialised');
 
 		// --- Step 2: login ---
-		console.log('[ankisync] logging in...');
 		const auth = await SyncClient.login(username, password, ankiEndpoint);
-		console.log('[ankisync] login OK, hkey:', auth.hkey.slice(0, 8) + '...');
 
 		// --- Step 3: ensure tmp dir exists ---
 		mkdirSync(this.tmpDir, { recursive: true });
 		mkdirSync(this.mediaDir, { recursive: true });
 
 		// --- Step 4: open or download collection ---
-		// Compare local collection state with server meta to decide whether
-		// a full download is needed (first run, or server schema changed, or
-		// another client synced ahead of us).
 		const syncClient = new SyncClient(auth);
 		let col: SyncableCollection;
 
 		if (!existsSync(this.collectionPath)) {
 			// First run — no local collection yet
-			console.log('[ankisync] first run: downloading collection from server...');
 			col = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
 			await syncClient.fullDownload(col);
 			col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
-			console.log('[ankisync] collection downloaded OK');
 		} else {
 			// Subsequent run — check if server has changed since our last sync
 			col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
@@ -120,35 +99,21 @@ export class SyncManager {
 			const serverMeta = await syncClient.fetchServerMeta();
 			console.log(`[ankisync] local usn=${localMeta.usn} scm=${localMeta.scm} | server usn=${serverMeta.usn} scm=${serverMeta.scm}`);
 
-		if (localMeta.scm !== serverMeta.scm) {
-			// Schema mismatch — must full download
-			console.log('[ankisync] schema mismatch: full download required');
-			console.log('[ankisync] collectionPath:', this.collectionPath);
-			col.close();
-			console.log('[ankisync] creating empty collection...');
-			col = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
-			console.log('[ankisync] empty collection created, starting fullDownload...');
-			await syncClient.fullDownload(col);
-			console.log('[ankisync] fullDownload done, re-opening from disk...');
-			col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
-			const reloadedMeta = col.syncMeta();
-			console.log(`[ankisync] re-opened: usn=${reloadedMeta.usn} scm=${reloadedMeta.scm} mod=${reloadedMeta.mod}`);
-			console.log('[ankisync] collection re-downloaded OK');
-		} else if (serverMeta.usn !== localMeta.usn) {
-			// Server has new changes from another client — full download to get them
-			console.log(`[ankisync] server ahead (usn ${localMeta.usn} → ${serverMeta.usn}): downloading latest...`);
-			console.log('[ankisync] collectionPath:', this.collectionPath);
-			col.close();
-			col = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
-			await syncClient.fullDownload(col);
-			console.log('[ankisync] fullDownload done, re-opening from disk...');
-			col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
-			const reloadedMeta2 = col.syncMeta();
-			console.log(`[ankisync] re-opened: usn=${reloadedMeta2.usn} scm=${reloadedMeta2.scm} mod=${reloadedMeta2.mod}`);
-			console.log('[ankisync] collection updated OK');
-		} else {
-			console.log('[ankisync] local collection up to date, skipping download');
-		}
+			if (localMeta.scm !== serverMeta.scm) {
+				console.log('[ankisync] schema mismatch: full download required');
+				col.close();
+				col = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
+				await syncClient.fullDownload(col);
+				col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
+			} else if (serverMeta.usn !== localMeta.usn) {
+				console.log(`[ankisync] server ahead (usn ${localMeta.usn} → ${serverMeta.usn}): downloading latest...`);
+				col.close();
+				col = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
+				await syncClient.fullDownload(col);
+				col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
+			} else {
+				console.log('[ankisync] local collection up to date, skipping download');
+			}
 		}
 
 		// --- Step 4: find all flashcard files ---
@@ -255,10 +220,8 @@ export class SyncManager {
 		}
 
 		// --- Step 8: sync with server ---
-		const preSyncMeta = col.syncMeta();
-		console.log(`[ankisync] pre-sync local: usn=${preSyncMeta.usn} scm=${preSyncMeta.scm} mod=${preSyncMeta.mod}`);
 		let action = await syncClient.sync(col);
-		console.log(`obsidian-ankisync: sync action = ${action}`);
+		console.log(`[ankisync] sync action = ${action}`);
 
 		if (action === SyncActionRequired.FULL_SYNC) {
 			// Schema mismatch — the server's collection has a different schema than ours.
@@ -269,7 +232,6 @@ export class SyncManager {
 			const freshCol = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
 			await syncClient.fullDownload(freshCol);
 			col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
-			console.log('[ankisync] re-downloaded OK, re-applying vault changes...');
 
 			// Re-apply vault changes on the freshly downloaded collection
 			const notetypeId2 = col.getOrCreateBasicNotetype();
@@ -310,7 +272,6 @@ export class SyncManager {
 
 			// Now do a normal sync — schema matches so it should be NORMAL_SYNC
 			action = await syncClient.sync(col);
-			console.log(`obsidian-ankisync: retry sync action = ${action}`);
 		}
 
 		// --- Step 9: media sync (if any media was added) ---
@@ -319,7 +280,9 @@ export class SyncManager {
 			try {
 				await mediaClient.open();
 				const mediaResult = await mediaClient.sync();
-				console.log(`obsidian-ankisync: media sync: downloaded=${mediaResult.downloaded} uploaded=${mediaResult.uploaded} deleted=${mediaResult.deleted}`);
+				if (mediaResult.downloaded > 0 || mediaResult.uploaded > 0 || mediaResult.deleted > 0) {
+					console.log(`[ankisync] media sync: downloaded=${mediaResult.downloaded} uploaded=${mediaResult.uploaded} deleted=${mediaResult.deleted}`);
+				}
 			} catch (err) {
 				console.warn('obsidian-ankisync: media sync failed:', err);
 			} finally {
