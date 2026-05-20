@@ -9,6 +9,8 @@ export interface AnkiSyncSettings {
 	deckPrefix: string;
 	deleteRemovedCards: boolean;
 	autoSyncOnSave: boolean;
+	singleLineSeparator: string;
+	multiLineSeparator: string;
 }
 
 export const DEFAULT_SETTINGS: AnkiSyncSettings = {
@@ -19,4 +21,6 @@ export const DEFAULT_SETTINGS: AnkiSyncSettings = {
 	deckPrefix: 'o_',
 	deleteRemovedCards: true,
 	autoSyncOnSave: false,
+	singleLineSeparator: '::',
+	multiLineSeparator: '?',
 };

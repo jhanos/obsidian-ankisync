@@ -236,6 +236,36 @@ class AnkiSyncSettingTab extends PluginSettingTab {
 					}),
 			);
 
+		containerEl.createEl('h3', { text: 'Separator Options' });
+
+		// Single-line separator
+		new Setting(containerEl)
+			.setName('Single-line separator')
+			.setDesc('Separator used for single-line flashcards (e.g. "Question :: Answer")')
+			.addText(text =>
+				text
+					.setPlaceholder('::')
+					.setValue(this.plugin.settings.singleLineSeparator)
+					.onChange(async (value) => {
+						this.plugin.settings.singleLineSeparator = value.trim() || '::';
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		// Multi-line separator
+		new Setting(containerEl)
+			.setName('Multi-line separator')
+			.setDesc('Separator line that divides question from answer in multi-line flashcards. Must appear alone on its own line.')
+			.addText(text =>
+				text
+					.setPlaceholder('?')
+					.setValue(this.plugin.settings.multiLineSeparator)
+					.onChange(async (value) => {
+						this.plugin.settings.multiLineSeparator = value.trim() || '?';
+						await this.plugin.saveSettings();
+					}),
+			);
+
 		containerEl.createEl('h3', { text: 'Actions' });
 
 		// Manual sync button

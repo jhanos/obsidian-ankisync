@@ -201,6 +201,8 @@ export function extractFlashcards(
 	content: string,
 	sourceFile: string,
 	vaultDir: string,
+	singleLineSep = '::',
+	multiLineSep = '?',
 ): Flashcard[] {
 	const cards: Flashcard[] = [];
 
@@ -219,13 +221,13 @@ export function extractFlashcards(
 	// Split into lines (keep original for line number tracking)
 	const lines = stripped.split('\n');
 
-	// --- Pass 1: single-line cards (question :: answer) ---
+	// --- Pass 1: single-line cards (question {sep} answer) ---
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
-		const sepIdx = line.indexOf('::');
+		const sepIdx = line.indexOf(singleLineSep);
 		if (sepIdx === -1) continue;
 		const front = line.slice(0, sepIdx).trim();
-		const back = line.slice(sepIdx + 2).trim();
+		const back = line.slice(sepIdx + singleLineSep.length).trim();
 		if (!front || !back) continue;
 		const imageRefs = [...findImagesInText(front), ...findImagesInText(back)];
 		const images = imageRefs
@@ -269,7 +271,7 @@ export function extractFlashcards(
 		}
 
 		// Single-line format in question position — skip; already handled above
-		if (inQuestion && trimmed.includes('::')) {
+		if (inQuestion && trimmed.includes(singleLineSep)) {
 			// reset any in-progress multiline
 			if (questionLines.length > 0 || answerLines.length > 0) {
 				flushMultiline();
@@ -277,7 +279,7 @@ export function extractFlashcards(
 			continue;
 		}
 
-		if (trimmed === '?') {
+		if (trimmed === multiLineSep) {
 			inQuestion = false;
 			continue;
 		}

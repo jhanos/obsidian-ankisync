@@ -45,7 +45,7 @@ export class SyncManager {
 	// -------------------------------------------------------------------------
 
 	async sync(vaultDir: string): Promise<SyncResult> {
-		let { ankiEndpoint, username, password, flashcardsTag, deckPrefix, deleteRemovedCards } = this.settings;
+		let { ankiEndpoint, username, password, flashcardsTag, deckPrefix, deleteRemovedCards, singleLineSeparator, multiLineSeparator } = this.settings;
 
 		if (!username || !password) {
 			throw new Error('Anki credentials are not configured. Please set username and password in plugin settings.');
@@ -126,7 +126,7 @@ export class SyncManager {
 
 		for (const filePath of mdFiles) {
 			const content = readFileSync(filePath, 'utf8');
-			const rawCards = extractFlashcards(content, filePath, vaultDir);
+			const rawCards = extractFlashcards(content, filePath, vaultDir, singleLineSeparator, multiLineSeparator);
 
 			const processedCards: { front: string; back: string }[] = [];
 			for (const card of rawCards) {
