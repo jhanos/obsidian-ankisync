@@ -789,16 +789,16 @@ export class SyncableCollection {
 	// -------------------------------------------------------------------------
 
 	/** Find all note ids in a deck. Returns Map<noteId, {front, back}>. */
-	getNotesInDeck(deckId: number, deckName?: string): Map<number, { front: string; back: string }> {
+	getNotesInDeck(deckId: number, deckName?: string): Map<number, { front: string; back: string; mid: number }> {
 		const rows = this.db.exec(
-			'SELECT n.id, n.flds FROM notes n JOIN cards c ON c.nid = n.id WHERE c.did = ? GROUP BY n.id',
+			'SELECT n.id, n.flds, n.mid FROM notes n JOIN cards c ON c.nid = n.id WHERE c.did = ? GROUP BY n.id',
 			[deckId],
 		);
-		const result = new Map<number, { front: string; back: string }>();
+		const result = new Map<number, { front: string; back: string; mid: number }>();
 		if (!rows.length) return result;
 		// Secondary map to detect duplicate fronts within the same deck
 		const frontToId = new Map<string, number>();
-		for (const [id, flds] of rows[0].values as [number, string][]) {
+		for (const [id, flds, mid] of rows[0].values as [number, string, number][]) {
 			const parts = flds.split('\x1f');
 			const front = parts[0] ?? '';
 			const back = parts[1] ?? '';
@@ -808,15 +808,14 @@ export class SyncableCollection {
 				console.warn(`[ankisync] duplicate front "${front}" in deck "${label}" — note ids ${existingId} and ${id} — keeping latest`);
 			}
 			frontToId.set(front, id);
-			result.set(id, { front, back });
+			result.set(id, { front, back, mid });
 		}
 		return result;
 	}
 
-	/** Add a note+card to the collection. Returns the new note id. */
-	addNote(front: string, back: string, deckId: number, notetypeId: number): number {
+	/** Add a note+card(s) to the collection. Returns the new note id. */
+	addNote(front: string, back: string, deckId: number, notetypeId: number, reverse = false): number {
 		const id = nextId();
-		const cardId = nextId();
 		const guid = generateGuid();
 		const flds = `${front}\x1f${back}`;
 		const sfld = front;
@@ -826,10 +825,20 @@ export class SyncableCollection {
 			'INSERT OR IGNORE INTO notes (id, guid, mid, mod, usn, tags, flds, sfld, csum, flags, data) VALUES (?, ?, ?, ?, -1, \'\', ?, ?, ?, 0, \'\')',
 			[id, guid, notetypeId, nowSecs(), flds, sfld, csum],
 		);
+		// Card 1 (ord=0): always inserted
+		const cardId1 = nextId();
 		this.db.run(
 			'INSERT OR IGNORE INTO cards (id, nid, did, ord, mod, usn, type, queue, due, ivl, factor, reps, lapses, left, odue, odid, flags, data) VALUES (?, ?, ?, 0, ?, -1, 0, 0, ?, 0, 0, 0, 0, 0, 0, 0, 0, \'\')',
-			[cardId, id, deckId, nowSecs(), cardId],
+			[cardId1, id, deckId, nowSecs(), cardId1],
 		);
+		// Card 2 (ord=1): only for reversed notetype
+		if (reverse) {
+			const cardId2 = nextId();
+			this.db.run(
+				'INSERT OR IGNORE INTO cards (id, nid, did, ord, mod, usn, type, queue, due, ivl, factor, reps, lapses, left, odue, odid, flags, data) VALUES (?, ?, ?, 1, ?, -1, 0, 0, ?, 0, 0, 0, 0, 0, 0, 0, 0, \'\')',
+				[cardId2, id, deckId, nowSecs(), cardId2],
+			);
+		}
 
 		this.touchCollection();
 		return id;
@@ -844,15 +853,43 @@ export class SyncableCollection {
 		this.db.run('UPDATE col SET mod = ? WHERE id = 1', [nowMs()]);
 	}
 
-	/** Update front and back fields of an existing note. */
-	updateNote(noteId: number, front: string, back: string): void {
+	/** Update front/back fields of an existing note, and optionally change its notetype.
+	 *  When notetypeId changes, card rows are reconciled:
+	 *  - switching to reversed: inserts ord=1 card if missing
+	 *  - switching from reversed: deletes ord=1 card (with grave)
+	 */
+	updateNote(noteId: number, front: string, back: string, deckId?: number, notetypeId?: number, reverse?: boolean): void {
 		const flds = `${front}\x1f${back}`;
 		const sfld = front;
 		const csum = crc32(sfld) & 0xffffffff;
-		this.db.run(
-			'UPDATE notes SET flds = ?, sfld = ?, csum = ?, mod = ?, usn = -1 WHERE id = ?',
-			[flds, sfld, csum, nowSecs(), noteId],
-		);
+
+		if (notetypeId !== undefined) {
+			this.db.run(
+				'UPDATE notes SET flds = ?, sfld = ?, csum = ?, mod = ?, usn = -1, mid = ? WHERE id = ?',
+				[flds, sfld, csum, nowSecs(), notetypeId, noteId],
+			);
+			// Reconcile card rows for ord=1
+			const hasOrd1 = this.db.exec('SELECT id FROM cards WHERE nid = ? AND ord = 1', [noteId]);
+			const ord1Exists = hasOrd1.length > 0 && hasOrd1[0].values.length > 0;
+			if (reverse && !ord1Exists && deckId !== undefined) {
+				// Add the reverse card row
+				const cardId2 = nextId();
+				this.db.run(
+					'INSERT OR IGNORE INTO cards (id, nid, did, ord, mod, usn, type, queue, due, ivl, factor, reps, lapses, left, odue, odid, flags, data) VALUES (?, ?, ?, 1, ?, -1, 0, 0, ?, 0, 0, 0, 0, 0, 0, 0, 0, \'\')',
+					[cardId2, noteId, deckId, nowSecs(), cardId2],
+				);
+			} else if (!reverse && ord1Exists) {
+				// Remove the reverse card row and insert a grave for it
+				const cardId2 = hasOrd1[0].values[0][0] as number;
+				this.db.run('DELETE FROM cards WHERE id = ?', [cardId2]);
+				this.insertGrave(cardId2, 0);
+			}
+		} else {
+			this.db.run(
+				'UPDATE notes SET flds = ?, sfld = ?, csum = ?, mod = ?, usn = -1 WHERE id = ?',
+				[flds, sfld, csum, nowSecs(), noteId],
+			);
+		}
 		this.touchCollection();
 	}
 

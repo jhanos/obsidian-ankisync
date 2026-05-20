@@ -171,7 +171,7 @@ export class SyncManager {
 				// If multiple notes share the same front in this deck (stale duplicates
 				// from previous broken syncs), delete the older ones via graves so the
 				// server cleans up on next sync.
-				const existingByFront = new Map<string, { id: number; back: string }>();
+				const existingByFront = new Map<string, { id: number; back: string; mid: number }>();
 				for (const [id, note] of existingNotes) {
 					const prev = existingByFront.get(note.front);
 					if (prev) {
@@ -181,9 +181,9 @@ export class SyncManager {
 						console.warn(`[ankisync] deduplicating front "${note.front}" in deck "${deckName}" — deleting note ${olderId}, keeping ${keepId}`);
 						col.deleteNote(olderId);
 						const keeper = existingNotes.get(keepId)!;
-						existingByFront.set(note.front, { id: keepId, back: keeper.back });
+						existingByFront.set(note.front, { id: keepId, back: keeper.back, mid: keeper.mid });
 					} else {
-						existingByFront.set(note.front, { id, back: note.back });
+						existingByFront.set(note.front, { id, back: note.back, mid: note.mid });
 					}
 				}
 
@@ -193,13 +193,14 @@ export class SyncManager {
 				for (const { front, back, reverse } of cards) {
 					vaultFronts.add(front);
 					const existing = existingByFront.get(front);
+					const targetMid = reverse ? reverseNotetypeId : notetypeId;
 					if (!existing) {
 						// New card — use reversed notetype if flagged
-						col.addNote(front, back, deckId, reverse ? reverseNotetypeId : notetypeId);
+						col.addNote(front, back, deckId, targetMid, reverse);
 						result.added++;
-					} else if (existing.back !== back) {
-						// Updated card
-						col.updateNote(existing.id, front, back);
+					} else if (existing.back !== back || existing.mid !== targetMid) {
+						// Content or notetype changed
+						col.updateNote(existing.id, front, back, deckId, targetMid, reverse);
 						result.updated++;
 					}
 					// else: unchanged — nothing to do
@@ -238,33 +239,34 @@ export class SyncManager {
 					const deckName = `${deckPrefix}${stem}`;
 					const deckId = col.createDeck(deckName);
 					const existingNotes = col.getNotesInDeck(deckId, deckName);
-					const existingByFront = new Map<string, { id: number; back: string }>();
+					const existingByFront2 = new Map<string, { id: number; back: string; mid: number }>();
 					for (const [id, note] of existingNotes) {
-						const prev = existingByFront.get(note.front);
+						const prev = existingByFront2.get(note.front);
 						if (prev) {
 							const olderId = prev.id < id ? prev.id : id;
 							const keepId  = prev.id < id ? id : prev.id;
 							col.deleteNote(olderId);
 							const keeper = existingNotes.get(keepId)!;
-							existingByFront.set(note.front, { id: keepId, back: keeper.back });
+							existingByFront2.set(note.front, { id: keepId, back: keeper.back, mid: keeper.mid });
 						} else {
-							existingByFront.set(note.front, { id, back: note.back });
+							existingByFront2.set(note.front, { id, back: note.back, mid: note.mid });
 						}
 					}
 					const vaultFronts = new Set<string>();
 					for (const { front, back, reverse } of cards) {
 						vaultFronts.add(front);
-						const existing = existingByFront.get(front);
+						const existing = existingByFront2.get(front);
+						const targetMid = reverse ? reverseNotetypeId2 : notetypeId2;
 						if (!existing) {
-							col.addNote(front, back, deckId, reverse ? reverseNotetypeId2 : notetypeId2);
+							col.addNote(front, back, deckId, targetMid, reverse);
 							result.added++;
-						} else if (existing.back !== back) {
-							col.updateNote(existing.id, front, back);
+						} else if (existing.back !== back || existing.mid !== targetMid) {
+							col.updateNote(existing.id, front, back, deckId, targetMid, reverse);
 							result.updated++;
 						}
 					}
 					if (deleteRemovedCards) {
-						for (const [front, { id }] of existingByFront) {
+						for (const [front, { id }] of existingByFront2) {
 							if (!vaultFronts.has(front)) {
 								col.deleteNote(id);
 								result.deleted++;
