@@ -167,6 +167,8 @@ export interface Flashcard {
 	sourceFile: string;
 	/** 1-based line number in the source file where this card is defined */
 	line: number;
+	/** If true, this card uses the "Basic (and reversed card)" notetype */
+	reverse: boolean;
 }
 
 export interface SyncResult {

@@ -45,7 +45,7 @@ export class SyncManager {
 	// -------------------------------------------------------------------------
 
 	async sync(vaultDir: string): Promise<SyncResult> {
-		let { ankiEndpoint, username, password, flashcardsTag, deckPrefix, deleteRemovedCards, singleLineSeparator, multiLineSeparator } = this.settings;
+		let { ankiEndpoint, username, password, flashcardsTag, deckPrefix, deleteRemovedCards, singleLineSeparator, multiLineSeparator, reverseSeparator } = this.settings;
 
 		if (!username || !password) {
 			throw new Error('Anki credentials are not configured. Please set username and password in plugin settings.');
@@ -121,19 +121,19 @@ export class SyncManager {
 		const mdFiles = this.findFlashcardFiles(vaultDir, flashcardsTag);
 
 		// --- Step 5: parse all flashcards and gather media ---
-		const cardsByFile = new Map<string, { front: string; back: string }[]>();
+		const cardsByFile = new Map<string, { front: string; back: string; reverse: boolean }[]>();
 		const allMedia: Array<{ ref: string; absolutePath: string }> = [];
 
 		for (const filePath of mdFiles) {
 			const content = readFileSync(filePath, 'utf8');
-			const rawCards = extractFlashcards(content, filePath, vaultDir, singleLineSeparator, multiLineSeparator);
+			const rawCards = extractFlashcards(content, filePath, vaultDir, singleLineSeparator, multiLineSeparator, reverseSeparator);
 
-			const processedCards: { front: string; back: string }[] = [];
+			const processedCards: { front: string; back: string; reverse: boolean }[] = [];
 			for (const card of rawCards) {
 				// Convert image references to <img> HTML and collect media
 				const front = convertImagesToHtml(card.front, filePath, vaultDir, allMedia);
 				const back = convertImagesToHtml(card.back, filePath, vaultDir, allMedia);
-				processedCards.push({ front, back });
+				processedCards.push({ front, back, reverse: card.reverse });
 			}
 			if (processedCards.length > 0) {
 				cardsByFile.set(filePath, processedCards);
@@ -154,6 +154,7 @@ export class SyncManager {
 
 		try {
 			const notetypeId = col.getOrCreateBasicNotetype();
+			const reverseNotetypeId = col.getOrCreateBasicReversedNotetype();
 
 			// Track which deck names are managed by this plugin (for delete logic)
 			const managedDeckNames = new Set<string>();
@@ -189,12 +190,12 @@ export class SyncManager {
 				// Track which fronts are in the vault (to detect deletions)
 				const vaultFronts = new Set<string>();
 
-				for (const { front, back } of cards) {
+				for (const { front, back, reverse } of cards) {
 					vaultFronts.add(front);
 					const existing = existingByFront.get(front);
 					if (!existing) {
-						// New card
-						col.addNote(front, back, deckId, notetypeId);
+						// New card — use reversed notetype if flagged
+						col.addNote(front, back, deckId, reverse ? reverseNotetypeId : notetypeId);
 						result.added++;
 					} else if (existing.back !== back) {
 						// Updated card
@@ -231,6 +232,7 @@ export class SyncManager {
 
 				// Re-apply vault changes on the freshly downloaded collection
 				const notetypeId2 = col.getOrCreateBasicNotetype();
+				const reverseNotetypeId2 = col.getOrCreateBasicReversedNotetype();
 				for (const [filePath, cards] of cardsByFile) {
 					const stem = basename(filePath, extname(filePath));
 					const deckName = `${deckPrefix}${stem}`;
@@ -250,11 +252,11 @@ export class SyncManager {
 						}
 					}
 					const vaultFronts = new Set<string>();
-					for (const { front, back } of cards) {
+					for (const { front, back, reverse } of cards) {
 						vaultFronts.add(front);
 						const existing = existingByFront.get(front);
 						if (!existing) {
-							col.addNote(front, back, deckId, notetypeId2);
+							col.addNote(front, back, deckId, reverse ? reverseNotetypeId2 : notetypeId2);
 							result.added++;
 						} else if (existing.back !== back) {
 							col.updateNote(existing.id, front, back);

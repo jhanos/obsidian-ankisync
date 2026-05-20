@@ -203,6 +203,7 @@ export function extractFlashcards(
 	vaultDir: string,
 	singleLineSep = '::',
 	multiLineSep = '?',
+	reverseSep = ':::',
 ): Flashcard[] {
 	const cards: Flashcard[] = [];
 
@@ -221,9 +222,28 @@ export function extractFlashcards(
 	// Split into lines (keep original for line number tracking)
 	const lines = stripped.split('\n');
 
-	// --- Pass 1: single-line cards (question {sep} answer) ---
+	// --- Pass 1: single-line cards ---
+	// Check reverseSep BEFORE singleLineSep since the default ":::" contains "::"
+	// and we must not misidentify a reverse card as a forward one.
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
+
+		// Reverse card (:::) — emits one note with two Anki card templates
+		const revIdx = line.indexOf(reverseSep);
+		if (revIdx !== -1) {
+			const front = line.slice(0, revIdx).trim();
+			const back = line.slice(revIdx + reverseSep.length).trim();
+			if (front && back) {
+				const imageRefs = [...findImagesInText(front), ...findImagesInText(back)];
+				const images = imageRefs
+					.map(ref => resolveImagePath(ref, sourceFile, vaultDir))
+					.filter((p): p is string => p !== null);
+				cards.push({ front, back, images, sourceFile, line: fmLines + i + 1, reverse: true });
+			}
+			continue; // do not also parse as single-line
+		}
+
+		// Forward-only card (::)
 		const sepIdx = line.indexOf(singleLineSep);
 		if (sepIdx === -1) continue;
 		const front = line.slice(0, sepIdx).trim();
@@ -233,7 +253,7 @@ export function extractFlashcards(
 		const images = imageRefs
 			.map(ref => resolveImagePath(ref, sourceFile, vaultDir))
 			.filter((p): p is string => p !== null);
-		cards.push({ front, back, images, sourceFile, line: fmLines + i + 1 });
+		cards.push({ front, back, images, sourceFile, line: fmLines + i + 1, reverse: false });
 	}
 
 	// --- Pass 2: multi-line cards (separated by '?') ---
@@ -251,7 +271,7 @@ export function extractFlashcards(
 			const images = imageRefs
 				.map(ref => resolveImagePath(ref, sourceFile, vaultDir))
 				.filter((p): p is string => p !== null);
-			cards.push({ front, back, images, sourceFile, line: fmLines + questionStartLine + 1 });
+			cards.push({ front, back, images, sourceFile, line: fmLines + questionStartLine + 1, reverse: false });
 		}
 		questionLines = [];
 		answerLines = [];
@@ -271,7 +291,7 @@ export function extractFlashcards(
 		}
 
 		// Single-line format in question position — skip; already handled above
-		if (inQuestion && trimmed.includes(singleLineSep)) {
+		if (inQuestion && (trimmed.includes(reverseSep) || trimmed.includes(singleLineSep))) {
 			// reset any in-progress multiline
 			if (questionLines.length > 0 || answerLines.length > 0) {
 				flushMultiline();

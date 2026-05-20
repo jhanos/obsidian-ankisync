@@ -881,6 +881,13 @@ export class SyncableCollection {
 		return this.ensureBasicNotetype();
 	}
 
+	/** Get or create a "Basic (and reversed card)" notetype. Returns the notetype id. */
+	getOrCreateBasicReversedNotetype(): number {
+		const r = this.db.exec('SELECT id FROM notetypes WHERE name = \'Basic (and reversed card)\'');
+		if (r.length && r[0].values.length) return r[0].values[0][0] as number;
+		return this.ensureBasicReversedNotetype();
+	}
+
 	private ensureBasicNotetype(): number {
 		const id = nowMs() - 1;
 		this.db.run(
@@ -897,6 +904,33 @@ export class SyncableCollection {
 		);
 		this.db.run(
 			'INSERT OR IGNORE INTO templates (ntid, ord, name, mtime_secs, usn, config) VALUES (?, 0, \'Card 1\', ?, -1, X\'\')',
+			[id, nowSecs()],
+		);
+		return id;
+	}
+
+	private ensureBasicReversedNotetype(): number {
+		const id = nowMs() - 2;
+		this.db.run(
+			'INSERT OR IGNORE INTO notetypes (id, name, mtime_secs, usn, config) VALUES (?, \'Basic (and reversed card)\', ?, -1, X\'\')',
+			[id, nowSecs()],
+		);
+		this.db.run(
+			'INSERT OR IGNORE INTO fields (ntid, ord, name, config) VALUES (?, 0, \'Front\', X\'\')',
+			[id],
+		);
+		this.db.run(
+			'INSERT OR IGNORE INTO fields (ntid, ord, name, config) VALUES (?, 1, \'Back\', X\'\')',
+			[id],
+		);
+		// Card 1: Front → Back
+		this.db.run(
+			'INSERT OR IGNORE INTO templates (ntid, ord, name, mtime_secs, usn, config) VALUES (?, 0, \'Card 1\', ?, -1, X\'\')',
+			[id, nowSecs()],
+		);
+		// Card 2: Back → Front
+		this.db.run(
+			'INSERT OR IGNORE INTO templates (ntid, ord, name, mtime_secs, usn, config) VALUES (?, 1, \'Card 2\', ?, -1, X\'\')',
 			[id, nowSecs()],
 		);
 		return id;

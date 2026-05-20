@@ -11,6 +11,7 @@ export interface AnkiSyncSettings {
 	autoSyncOnSave: boolean;
 	singleLineSeparator: string;
 	multiLineSeparator: string;
+	reverseSeparator: string;
 }
 
 export const DEFAULT_SETTINGS: AnkiSyncSettings = {
@@ -23,4 +24,5 @@ export const DEFAULT_SETTINGS: AnkiSyncSettings = {
 	autoSyncOnSave: false,
 	singleLineSeparator: '::',
 	multiLineSeparator: '?',
+	reverseSeparator: ':::',
 };

@@ -252,6 +252,20 @@ class AnkiSyncSettingTab extends PluginSettingTab {
 					}),
 			);
 
+		// Reverse card separator
+		new Setting(containerEl)
+			.setName('Reverse card separator')
+			.setDesc('Separator for cards that generate both front→back and back→front (e.g. "Question ::: Answer"). Uses the "Basic (and reversed card)" Anki notetype.')
+			.addText(text =>
+				text
+					.setPlaceholder(':::')
+					.setValue(this.plugin.settings.reverseSeparator)
+					.onChange(async (value) => {
+						this.plugin.settings.reverseSeparator = value.trim() || ':::';
+						await this.plugin.saveSettings();
+					}),
+			);
+
 		// Multi-line separator
 		new Setting(containerEl)
 			.setName('Multi-line separator')
