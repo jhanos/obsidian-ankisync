@@ -188,6 +188,8 @@ export interface Flashcard {
 	images: string[];
 	/** Source file path (absolute) */
 	sourceFile: string;
+	/** 1-based line number in the source file where this card is defined */
+	line: number;
 }
 
 export interface SyncResult {

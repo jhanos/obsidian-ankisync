@@ -196,12 +196,26 @@ export class SyncManager {
 			managedDeckNames.add(deckName);
 
 			const deckId = col.createDeck(deckName);
-			const existingNotes = col.getNotesInDeck(deckId);
+			const existingNotes = col.getNotesInDeck(deckId, deckName);
 
-			// Build lookup: front → noteId for existing notes
+			// Build lookup: front → noteId for existing notes.
+			// If multiple notes share the same front in this deck (stale duplicates
+			// from previous broken syncs), delete the older ones via graves so the
+			// server cleans up on next sync.
 			const existingByFront = new Map<string, { id: number; back: string }>();
 			for (const [id, note] of existingNotes) {
-				existingByFront.set(note.front, { id, back: note.back });
+				const prev = existingByFront.get(note.front);
+				if (prev) {
+					// Keep the newer note (higher id), delete the older one with graves
+					const olderId = prev.id < id ? prev.id : id;
+					const keepId  = prev.id < id ? id : prev.id;
+					console.warn(`[ankisync] deduplicating front "${note.front}" in deck "${deckName}" — deleting note ${olderId}, keeping ${keepId}`);
+					col.deleteNote(olderId);
+					const keeper = existingNotes.get(keepId)!;
+					existingByFront.set(note.front, { id: keepId, back: keeper.back });
+				} else {
+					existingByFront.set(note.front, { id, back: note.back });
+				}
 			}
 
 			// Track which fronts are in the vault (to detect deletions)
@@ -263,10 +277,19 @@ export class SyncManager {
 				const stem = basename(filePath, extname(filePath));
 				const deckName = `${deckPrefix}${stem}`;
 				const deckId = col.createDeck(deckName);
-				const existingNotes = col.getNotesInDeck(deckId);
+				const existingNotes = col.getNotesInDeck(deckId, deckName);
 				const existingByFront = new Map<string, { id: number; back: string }>();
 				for (const [id, note] of existingNotes) {
-					existingByFront.set(note.front, { id, back: note.back });
+					const prev = existingByFront.get(note.front);
+					if (prev) {
+						const olderId = prev.id < id ? prev.id : id;
+						const keepId  = prev.id < id ? id : prev.id;
+						col.deleteNote(olderId);
+						const keeper = existingNotes.get(keepId)!;
+						existingByFront.set(note.front, { id: keepId, back: keeper.back });
+					} else {
+						existingByFront.set(note.front, { id, back: note.back });
+					}
 				}
 				const vaultFronts = new Set<string>();
 				for (const { front, back } of cards) {

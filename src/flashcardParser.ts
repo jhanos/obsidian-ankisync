@@ -205,13 +205,23 @@ export function extractFlashcards(
 	const cards: Flashcard[] = [];
 
 	// Strip YAML frontmatter
-	const stripped = content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '');
+	let stripped = content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '');
 
-	// Split into non-empty lines
+	// Strip Obsidian Spaced Repetition plugin comments (<!--SR:!date,interval,ease-->)
+	// These are injected/updated by the SR plugin on every review, so including them
+	// in card fields would cause a spurious "updated" on every sync.
+	stripped = stripped.replace(/<!--SR:[^>]*-->/g, '');
+
+	// Calculate frontmatter line offset for accurate line number reporting
+	const fmMatch = content.match(/^---\s*\n[\s\S]*?\n---\s*\n?/);
+	const fmLines = fmMatch ? fmMatch[0].split('\n').length - 1 : 0;
+
+	// Split into lines (keep original for line number tracking)
 	const lines = stripped.split('\n');
 
 	// --- Pass 1: single-line cards (question :: answer) ---
-	for (const line of lines) {
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
 		const sepIdx = line.indexOf('::');
 		if (sepIdx === -1) continue;
 		const front = line.slice(0, sepIdx).trim();
@@ -221,12 +231,13 @@ export function extractFlashcards(
 		const images = imageRefs
 			.map(ref => resolveImagePath(ref, sourceFile, vaultDir))
 			.filter((p): p is string => p !== null);
-		cards.push({ front, back, images, sourceFile });
+		cards.push({ front, back, images, sourceFile, line: fmLines + i + 1 });
 	}
 
 	// --- Pass 2: multi-line cards (separated by '?') ---
 	// Collect blocks separated by blank lines, find '?' dividers
 	let questionLines: string[] = [];
+	let questionStartLine = 0;
 	let inQuestion = true;
 	let answerLines: string[] = [];
 
@@ -241,7 +252,7 @@ export function extractFlashcards(
 				const images = imageRefs
 					.map(ref => resolveImagePath(ref, sourceFile, vaultDir))
 					.filter((p): p is string => p !== null);
-				cards.push({ front, back, images, sourceFile });
+				cards.push({ front, back, images, sourceFile, line: fmLines + questionStartLine + 1 });
 			}
 		}
 		questionLines = [];
@@ -249,7 +260,8 @@ export function extractFlashcards(
 		inQuestion = true;
 	};
 
-	for (const line of lines) {
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
 		const trimmed = line.trim();
 
 		// A blank line resets the current block
@@ -275,6 +287,7 @@ export function extractFlashcards(
 		}
 
 		if (inQuestion) {
+			if (questionLines.length === 0) questionStartLine = i;
 			questionLines.push(line);
 		} else {
 			answerLines.push(line);

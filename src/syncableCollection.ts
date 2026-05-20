@@ -800,16 +800,26 @@ export class SyncableCollection {
 	// -------------------------------------------------------------------------
 
 	/** Find all note ids in a deck. Returns Map<noteId, {front, back}>. */
-	getNotesInDeck(deckId: number): Map<number, { front: string; back: string }> {
+	getNotesInDeck(deckId: number, deckName?: string): Map<number, { front: string; back: string }> {
 		const rows = this.db.exec(
 			'SELECT n.id, n.flds FROM notes n JOIN cards c ON c.nid = n.id WHERE c.did = ? GROUP BY n.id',
 			[deckId],
 		);
 		const result = new Map<number, { front: string; back: string }>();
 		if (!rows.length) return result;
+		// Secondary map to detect duplicate fronts within the same deck
+		const frontToId = new Map<string, number>();
 		for (const [id, flds] of rows[0].values as [number, string][]) {
 			const parts = flds.split('\x1f');
-			result.set(id, { front: parts[0] ?? '', back: parts[1] ?? '' });
+			const front = parts[0] ?? '';
+			const back = parts[1] ?? '';
+			const existingId = frontToId.get(front);
+			if (existingId !== undefined) {
+				const label = deckName ?? `id=${deckId}`;
+				console.warn(`[ankisync] duplicate front "${front}" in deck "${label}" — note ids ${existingId} and ${id} — keeping latest`);
+			}
+			frontToId.set(front, id);
+			result.set(id, { front, back });
 		}
 		return result;
 	}

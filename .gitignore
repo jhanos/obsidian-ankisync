@@ -13,3 +13,6 @@ main.js
 # OS
 .DS_Store
 Thumbs.db
+
+# example
+examples/
