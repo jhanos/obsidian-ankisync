@@ -46,6 +46,11 @@ async function getSql(): Promise<SqlJsStatic> {
 	return SQL;
 }
 
+/** Return the already-initialised sql.js instance. Throws if initSql() has not been called. */
+export async function getSqlInstance(): Promise<SqlJsStatic> {
+	return getSql();
+}
+
 /**
  * sql.js does not support custom collations. Anki's collection uses `unicase`
  * (case-insensitive Unicode) in its schema DDL. We patch the raw SQLite bytes
@@ -549,11 +554,11 @@ export class SyncableCollection {
 		for (const nt of changes.notetypes) {
 			this.applyNotetype(nt, serverUsn);
 		}
-		const [decks, deckConfigs] = changes.decks;
-		for (const d of decks) {
+		const [decks, deckConfigs] = changes.decks ?? [[], []];
+		for (const d of (decks ?? [])) {
 			this.applyDeck(d, serverUsn);
 		}
-		for (const dc of deckConfigs) {
+		for (const dc of (deckConfigs ?? [])) {
 			this.applyDeckConfig(dc, serverUsn);
 		}
 		for (const tag of changes.tags) {
@@ -759,7 +764,7 @@ export class SyncableCollection {
 	// Deck management
 	// -------------------------------------------------------------------------
 
-	getDeckId(name: string): number | null {
+	private getDeckId(name: string): number | null {
 		const r = this.db.exec('SELECT id FROM decks WHERE name = ?', [name]);
 		if (!r.length || !r[0].values.length) return null;
 		return r[0].values[0][0] as number;
@@ -924,9 +929,5 @@ export class SyncableCollection {
 		if (!existsSync(dest)) {
 			copyFileSync(sourcePath, dest);
 		}
-	}
-
-	get mediaDirPath(): string {
-		return this.mediaDir;
 	}
 }

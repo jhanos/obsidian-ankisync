@@ -18,7 +18,7 @@
  * Read a base-128 varint from buf at offset.
  * Returns [value, newOffset].
  */
-export function readVarint(buf: Uint8Array, offset: number): [bigint, number] {
+function readVarint(buf: Uint8Array, offset: number): [bigint, number] {
 	let result = 0n;
 	let shift = 0n;
 	let pos = offset;
@@ -79,8 +79,11 @@ export function parseProtobufFields(buf: Uint8Array): Map<number, Array<bigint |
 				break;
 			}
 			default:
-				// Unknown wire type — cannot continue parsing safely
-				throw new Error(`Unknown protobuf wire type ${wireType} at offset ${offset}`);
+				// Unknown wire type — skip this field and stop (cannot know its length)
+				// This makes parsing forward-compatible with newer Anki server versions.
+				console.warn(`[ankisync] protobuf: unknown wire type ${wireType} at offset ${offset}, skipping remaining bytes`);
+				offset = buf.length;
+				break;
 		}
 	}
 
@@ -130,7 +133,7 @@ export function getBytesField(
 // ---------------------------------------------------------------------------
 
 /** Encode a non-negative integer as a base-128 varint. */
-export function encodeVarint(value: bigint): Uint8Array {
+function encodeVarint(value: bigint): Uint8Array {
 	if (value === 0n) return new Uint8Array([0]);
 	const bytes: number[] = [];
 	let v = value;
@@ -148,7 +151,7 @@ function encodeTag(fieldNum: number, wireType: number): Uint8Array {
 }
 
 /** Encode a raw bytes field (wire type 2). */
-export function encodeBytes(fieldNum: number, value: Uint8Array): Uint8Array {
+function encodeBytes(fieldNum: number, value: Uint8Array): Uint8Array {
 	const tag = encodeTag(fieldNum, 2);
 	const len = encodeVarint(BigInt(value.length));
 	const out = new Uint8Array(tag.length + len.length + value.length);
@@ -158,13 +161,8 @@ export function encodeBytes(fieldNum: number, value: Uint8Array): Uint8Array {
 	return out;
 }
 
-/** Encode a string field (wire type 2, UTF-8). */
-export function encodeString(fieldNum: number, value: string): Uint8Array {
-	return encodeBytes(fieldNum, new TextEncoder().encode(value));
-}
-
 /** Encode a varint field (wire type 0). */
-export function encodeVarintField(fieldNum: number, value: bigint): Uint8Array {
+function encodeVarintField(fieldNum: number, value: bigint): Uint8Array {
 	const tag = encodeTag(fieldNum, 0);
 	const val = encodeVarint(value);
 	const out = new Uint8Array(tag.length + val.length);
@@ -174,7 +172,7 @@ export function encodeVarintField(fieldNum: number, value: bigint): Uint8Array {
 }
 
 /** Concatenate multiple Uint8Arrays into one. */
-export function concatBytes(...parts: Uint8Array[]): Uint8Array {
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
 	const total = parts.reduce((n, p) => n + p.length, 0);
 	const out = new Uint8Array(total);
 	let offset = 0;

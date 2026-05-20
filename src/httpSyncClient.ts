@@ -2,7 +2,7 @@ import * as https from 'https';
 import * as http from 'http';
 import * as zlib from 'zlib';
 import { readFileSync } from 'fs';
-import { compress, decompress, ZstdModule, waitInitialized, initZstdWasm } from './zstd-shim';
+import { compress, decompress, initZstdWasm } from './zstd-shim';
 import {
 	SyncAuth,
 	SyncMeta,

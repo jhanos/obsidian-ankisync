@@ -111,9 +111,11 @@ export default class AnkiSyncPlugin extends Plugin {
 		throw new Error('Cannot determine vault directory (non-desktop adapter)');
 	}
 
-	private getPluginDir(): string {
+	getPluginDir(): string {
 		const vaultDir = this.getVaultDir();
-		return `${vaultDir}/.obsidian/plugins/obsidian-ankisync`;
+		// manifest.dir is relative to vault root (e.g. ".obsidian/plugins/obsidian-ankisync")
+		const relDir = this.manifest.dir ?? `.obsidian/plugins/${this.manifest.id}`;
+		return `${vaultDir}/${relDir}`;
 	}
 }
 
@@ -257,7 +259,7 @@ class AnkiSyncSettingTab extends PluginSettingTab {
 					.setWarning()
 					.onClick(async () => {
 						const { rmSync } = await import('fs');
-						const pluginDir = `${this.plugin.app.vault.adapter && 'getBasePath' in this.plugin.app.vault.adapter ? (this.plugin.app.vault.adapter as { getBasePath: () => string }).getBasePath() : ''}/.obsidian/plugins/obsidian-ankisync`;
+						const pluginDir = this.plugin.getPluginDir();
 						const tmpDir = `${pluginDir}/tmp`;
 						try {
 							rmSync(tmpDir, { recursive: true, force: true });

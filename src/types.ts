@@ -35,13 +35,6 @@ export interface SyncMeta {
 	mediaUsn: number;
 }
 
-export interface SyncOutput {
-	required: SyncActionRequired;
-	serverMessage: string;
-	hostNumber: number;
-	newEndpoint: string | null;
-}
-
 // ---------------------------------------------------------------------------
 // Graves (deletions)
 // ---------------------------------------------------------------------------
@@ -162,22 +155,6 @@ export interface SanityCheckCounts {
 }
 
 // ---------------------------------------------------------------------------
-// Media sync
-// ---------------------------------------------------------------------------
-
-export const enum MediaAction {
-	ADD = 'ADD',
-	REMOVE = 'REMOVE',
-}
-
-export interface MediaChange {
-	filename: string;
-	usn: number;
-	sha1: string | null;
-	action: MediaAction;
-}
-
-// ---------------------------------------------------------------------------
 // Flashcard domain types
 // ---------------------------------------------------------------------------
 
@@ -206,4 +183,3 @@ export const SYNC_VERSION = 11;
 export const CHUNK_SIZE = 250;
 export const DEFAULT_ENDPOINT = 'https://ankiweb.thonis.fr/';
 export const MAX_MEDIA_FILES_PER_ZIP = 25;
-export const MEDIA_SYNC_TARGET_ZIP_BYTES = 2621440;

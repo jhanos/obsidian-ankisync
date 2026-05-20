@@ -67,7 +67,7 @@ function escapeRegex(s: string): string {
  * Find all image references in text.
  * Returns raw reference strings (filename or path), deduplicated.
  */
-export function findImagesInText(text: string): string[] {
+function findImagesInText(text: string): string[] {
 	const refs: string[] = [];
 
 	for (const match of text.matchAll(OBSIDIAN_IMAGE_RE)) {
@@ -101,7 +101,7 @@ export function findImagesInText(text: string): string[] {
  *   4. Vault root / assets/
  *   5. Recursive search under vault root
  */
-export function resolveImagePath(ref: string, sourceFile: string, vaultDir: string): string | null {
+function resolveImagePath(ref: string, sourceFile: string, vaultDir: string): string | null {
 	const filename = basename(ref);
 	const candidates = [
 		join(dirname(sourceFile), filename),
@@ -245,15 +245,11 @@ export function extractFlashcards(
 		const front = questionLines.join('\n').trim();
 		const back = answerLines.join('\n').trim();
 		if (front && back) {
-			// Skip if this is already captured as a single-line card
-			const isSingleLine = front.includes('::') && answerLines.length <= 1;
-			if (!isSingleLine) {
-				const imageRefs = [...findImagesInText(front), ...findImagesInText(back)];
-				const images = imageRefs
-					.map(ref => resolveImagePath(ref, sourceFile, vaultDir))
-					.filter((p): p is string => p !== null);
-				cards.push({ front, back, images, sourceFile, line: fmLines + questionStartLine + 1 });
-			}
+			const imageRefs = [...findImagesInText(front), ...findImagesInText(back)];
+			const images = imageRefs
+				.map(ref => resolveImagePath(ref, sourceFile, vaultDir))
+				.filter((p): p is string => p !== null);
+			cards.push({ front, back, images, sourceFile, line: fmLines + questionStartLine + 1 });
 		}
 		questionLines = [];
 		answerLines = [];
@@ -272,8 +268,8 @@ export function extractFlashcards(
 			continue;
 		}
 
-		// Single-line format — skip; already handled above
-		if (trimmed.includes('::') && !trimmed.startsWith('?')) {
+		// Single-line format in question position — skip; already handled above
+		if (inQuestion && trimmed.includes('::')) {
 			// reset any in-progress multiline
 			if (questionLines.length > 0 || answerLines.length > 0) {
 				flushMultiline();

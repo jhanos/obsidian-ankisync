@@ -52,12 +52,6 @@ export class SyncClient {
 		}
 	}
 
-	/** Return the current resolved auth (may have been updated by redirect). */
-	getAuth(): SyncAuth {
-		return this.auth;
-	}
-
-
 	async sync(col: SyncableCollection): Promise<SyncActionRequired> {
 		const localMeta = col.syncMeta();
 		const serverMeta = await this.fetchServerMeta();
@@ -88,12 +82,6 @@ export class SyncClient {
 			}
 			throw err;
 		}
-	}
-
-	/** Full collection upload. */
-	async fullUpload(col: SyncableCollection): Promise<void> {
-		const data = col.closeForFullUpload();
-		await this.http.upload(Buffer.from(data));
 	}
 
 	/** Full collection download — writes raw bytes to the collection path. */
@@ -127,12 +115,13 @@ export class SyncClient {
 
 			// Step 8: send local graves to server in chunks of CHUNK_SIZE
 			let chunk = takeGravesChunk(localGraves, CHUNK_SIZE);
+			const hadGraves = !gravesEmpty(chunk);
 			while (!gravesEmpty(chunk)) {
 				await this.http.applyGraves(chunk);
 				chunk = takeGravesChunk(localGraves, CHUNK_SIZE);
 			}
-			// Send final empty chunk only if we had graves (server may expect it)
-			if (!gravesEmpty(localGraves)) {
+			// Send final empty chunk to signal end of graves stream (only if we sent at least one)
+			if (hadGraves) {
 				await this.http.applyGraves({ cards: [], notes: [], decks: [] });
 			}
 
@@ -197,5 +186,4 @@ export class SyncClient {
 	}
 }
 
-// Re-export for convenience
-export { SyncAuth, Graves, Chunk, UnchunkedChanges };
+

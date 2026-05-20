@@ -1,17 +1,11 @@
-import initSqlJs, { Database, SqlJsStatic } from 'sql.js';
+import { Database } from 'sql.js';
 import { createHash } from 'crypto';
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { join, basename } from 'path';
 import JSZip from 'jszip';
 import { HttpSyncClient } from './httpSyncClient';
-import { SyncAuth, MediaAction, MediaChange, MAX_MEDIA_FILES_PER_ZIP, MEDIA_SYNC_TARGET_ZIP_BYTES } from './types';
-
-// sql.js singleton
-let SQL: SqlJsStatic | null = null;
-async function getSql(): Promise<SqlJsStatic> {
-	if (!SQL) SQL = await initSqlJs();
-	return SQL;
-}
+import { SyncAuth, MAX_MEDIA_FILES_PER_ZIP } from './types';
+import { getSqlInstance } from './syncableCollection';
 
 // ---------------------------------------------------------------------------
 // MediaSyncClient
@@ -38,7 +32,7 @@ export class MediaSyncClient {
 	// -------------------------------------------------------------------------
 
 	async open(): Promise<void> {
-		const sql = await getSql();
+		const sql = await getSqlInstance();
 		if (existsSync(this.mediaDbPath)) {
 			const data = readFileSync(this.mediaDbPath);
 			this.db = new sql.Database(data);
@@ -205,7 +199,7 @@ export class MediaSyncClient {
 			if (changes.length < 1000) break;
 		}
 
-		this.setLastUsn(cursor || serverUsn);
+		this.setLastUsn(cursor !== lastUsn ? cursor : serverUsn);
 
 		// --- Step 3: upload local dirty files ---
 		const dirtyRows = this.db!.exec('SELECT fname, csum FROM media WHERE dirty = 1');

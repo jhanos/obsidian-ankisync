@@ -85,34 +85,35 @@ export class SyncManager {
 
 		// --- Step 4: open or download collection ---
 		const syncClient = new SyncClient(auth);
-		let col: SyncableCollection;
+		let col: SyncableCollection | null = null;
 
 		if (!existsSync(this.collectionPath)) {
 			// First run — no local collection yet
-			col = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
-			await syncClient.fullDownload(col);
+			const tmpCol = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
+			await syncClient.fullDownload(tmpCol);
 			col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
 		} else {
 			// Subsequent run — check if server has changed since our last sync
-			col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
-			const localMeta = col.syncMeta();
+			const tmpCol = await SyncableCollection.open(this.collectionPath, this.mediaDir);
+			const localMeta = tmpCol.syncMeta();
 			const serverMeta = await syncClient.fetchServerMeta();
 			console.log(`[ankisync] local usn=${localMeta.usn} scm=${localMeta.scm} | server usn=${serverMeta.usn} scm=${serverMeta.scm}`);
 
 			if (localMeta.scm !== serverMeta.scm) {
 				console.log('[ankisync] schema mismatch: full download required');
-				col.close();
-				col = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
-				await syncClient.fullDownload(col);
+				tmpCol.close();
+				const freshCol = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
+				await syncClient.fullDownload(freshCol);
 				col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
 			} else if (serverMeta.usn !== localMeta.usn) {
 				console.log(`[ankisync] server ahead (usn ${localMeta.usn} → ${serverMeta.usn}): downloading latest...`);
-				col.close();
-				col = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
-				await syncClient.fullDownload(col);
+				tmpCol.close();
+				const freshCol = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
+				await syncClient.fullDownload(freshCol);
 				col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
 			} else {
 				console.log('[ankisync] local collection up to date, skipping download');
+				col = tmpCol;
 			}
 		}
 
@@ -150,102 +151,33 @@ export class SyncManager {
 
 		// --- Step 7: diff and apply changes ---
 		const result: SyncResult = { added: 0, updated: 0, deleted: 0 };
-		const notetypeId = col.getOrCreateBasicNotetype();
 
-		// Track which deck names are managed by this plugin (for delete logic)
-		const managedDeckNames = new Set<string>();
+		try {
+			const notetypeId = col.getOrCreateBasicNotetype();
 
-		for (const [filePath, cards] of cardsByFile) {
-			const stem = basename(filePath, extname(filePath));
-			const deckName = `${deckPrefix}${stem}`;
-			managedDeckNames.add(deckName);
+			// Track which deck names are managed by this plugin (for delete logic)
+			const managedDeckNames = new Set<string>();
 
-			const deckId = col.createDeck(deckName);
-			const existingNotes = col.getNotesInDeck(deckId, deckName);
-
-			// Build lookup: front → noteId for existing notes.
-			// If multiple notes share the same front in this deck (stale duplicates
-			// from previous broken syncs), delete the older ones via graves so the
-			// server cleans up on next sync.
-			const existingByFront = new Map<string, { id: number; back: string }>();
-			for (const [id, note] of existingNotes) {
-				const prev = existingByFront.get(note.front);
-				if (prev) {
-					// Keep the newer note (higher id), delete the older one with graves
-					const olderId = prev.id < id ? prev.id : id;
-					const keepId  = prev.id < id ? id : prev.id;
-					console.warn(`[ankisync] deduplicating front "${note.front}" in deck "${deckName}" — deleting note ${olderId}, keeping ${keepId}`);
-					col.deleteNote(olderId);
-					const keeper = existingNotes.get(keepId)!;
-					existingByFront.set(note.front, { id: keepId, back: keeper.back });
-				} else {
-					existingByFront.set(note.front, { id, back: note.back });
-				}
-			}
-
-			// Track which fronts are in the vault (to detect deletions)
-			const vaultFronts = new Set<string>();
-
-			for (const { front, back } of cards) {
-				vaultFronts.add(front);
-				const existing = existingByFront.get(front);
-				if (!existing) {
-					// New card
-					col.addNote(front, back, deckId, notetypeId);
-					result.added++;
-				} else if (existing.back !== back) {
-					// Updated card
-					col.updateNote(existing.id, front, back);
-					result.updated++;
-				}
-				// else: unchanged — nothing to do
-			}
-
-			// Deletions: notes in Anki not present in vault
-			if (deleteRemovedCards) {
-				for (const [front, { id }] of existingByFront) {
-					if (!vaultFronts.has(front)) {
-						col.deleteNote(id);
-						result.deleted++;
-					}
-				}
-			}
-		}
-
-		// Also delete notes in decks that no longer have any flashcard source file
-		if (deleteRemovedCards) {
-			// (handled above per file — if a file is removed it won't appear in cardsByFile)
-			// Orphaned managed decks: we don't auto-delete the whole deck, just the cards
-			// that were removed (already handled). Deck stays as empty container.
-		}
-
-		// --- Step 8: sync with server ---
-		let action = await syncClient.sync(col);
-		console.log(`[ankisync] sync action = ${action}`);
-
-		if (action === SyncActionRequired.FULL_SYNC) {
-			// Schema mismatch — the server's collection has a different schema than ours.
-			// Re-download the server's collection, re-apply vault changes on top, then
-			// sync again. This preserves the server's schema (e.g. AnkiDroid v1 format).
-			console.log('[ankisync] FULL_SYNC required: re-downloading server collection...');
-			col.close();
-			const freshCol = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
-			await syncClient.fullDownload(freshCol);
-			col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
-
-			// Re-apply vault changes on the freshly downloaded collection
-			const notetypeId2 = col.getOrCreateBasicNotetype();
 			for (const [filePath, cards] of cardsByFile) {
 				const stem = basename(filePath, extname(filePath));
 				const deckName = `${deckPrefix}${stem}`;
+				managedDeckNames.add(deckName);
+
 				const deckId = col.createDeck(deckName);
 				const existingNotes = col.getNotesInDeck(deckId, deckName);
+
+				// Build lookup: front → noteId for existing notes.
+				// If multiple notes share the same front in this deck (stale duplicates
+				// from previous broken syncs), delete the older ones via graves so the
+				// server cleans up on next sync.
 				const existingByFront = new Map<string, { id: number; back: string }>();
 				for (const [id, note] of existingNotes) {
 					const prev = existingByFront.get(note.front);
 					if (prev) {
+						// Keep the newer note (higher id), delete the older one with graves
 						const olderId = prev.id < id ? prev.id : id;
 						const keepId  = prev.id < id ? id : prev.id;
+						console.warn(`[ankisync] deduplicating front "${note.front}" in deck "${deckName}" — deleting note ${olderId}, keeping ${keepId}`);
 						col.deleteNote(olderId);
 						const keeper = existingNotes.get(keepId)!;
 						existingByFront.set(note.front, { id: keepId, back: keeper.back });
@@ -253,44 +185,115 @@ export class SyncManager {
 						existingByFront.set(note.front, { id, back: note.back });
 					}
 				}
+
+				// Track which fronts are in the vault (to detect deletions)
 				const vaultFronts = new Set<string>();
+
 				for (const { front, back } of cards) {
 					vaultFronts.add(front);
 					const existing = existingByFront.get(front);
 					if (!existing) {
-						col.addNote(front, back, deckId, notetypeId2);
+						// New card
+						col.addNote(front, back, deckId, notetypeId);
+						result.added++;
 					} else if (existing.back !== back) {
+						// Updated card
 						col.updateNote(existing.id, front, back);
+						result.updated++;
 					}
+					// else: unchanged — nothing to do
 				}
+
+				// Deletions: notes in Anki not present in vault
 				if (deleteRemovedCards) {
 					for (const [front, { id }] of existingByFront) {
-						if (!vaultFronts.has(front)) col.deleteNote(id);
+						if (!vaultFronts.has(front)) {
+							col.deleteNote(id);
+							result.deleted++;
+						}
 					}
 				}
 			}
 
-			// Now do a normal sync — schema matches so it should be NORMAL_SYNC
-			action = await syncClient.sync(col);
-		}
+			// --- Step 8: sync with server ---
+			let action = await syncClient.sync(col);
+			console.log(`[ankisync] sync action = ${action}`);
 
-		// --- Step 9: media sync (if any media was added) ---
-		if (allMedia.length > 0 || action !== SyncActionRequired.NO_CHANGES) {
-			const mediaClient = new MediaSyncClient(auth, this.mediaDir, this.mediaDbPath);
-			try {
-				await mediaClient.open();
-				const mediaResult = await mediaClient.sync();
-				if (mediaResult.downloaded > 0 || mediaResult.uploaded > 0 || mediaResult.deleted > 0) {
-					console.log(`[ankisync] media sync: downloaded=${mediaResult.downloaded} uploaded=${mediaResult.uploaded} deleted=${mediaResult.deleted}`);
+			if (action === SyncActionRequired.FULL_SYNC) {
+				// Schema mismatch — the server's collection has a different schema than ours.
+				// Re-download the server's collection, re-apply vault changes on top, then
+				// sync again. This preserves the server's schema (e.g. AnkiDroid v1 format).
+				console.log('[ankisync] FULL_SYNC required: re-downloading server collection...');
+				col.close();
+				const freshCol = await SyncableCollection.createEmpty(this.collectionPath, this.mediaDir);
+				await syncClient.fullDownload(freshCol);
+				col = await SyncableCollection.open(this.collectionPath, this.mediaDir);
+
+				// Re-apply vault changes on the freshly downloaded collection
+				const notetypeId2 = col.getOrCreateBasicNotetype();
+				for (const [filePath, cards] of cardsByFile) {
+					const stem = basename(filePath, extname(filePath));
+					const deckName = `${deckPrefix}${stem}`;
+					const deckId = col.createDeck(deckName);
+					const existingNotes = col.getNotesInDeck(deckId, deckName);
+					const existingByFront = new Map<string, { id: number; back: string }>();
+					for (const [id, note] of existingNotes) {
+						const prev = existingByFront.get(note.front);
+						if (prev) {
+							const olderId = prev.id < id ? prev.id : id;
+							const keepId  = prev.id < id ? id : prev.id;
+							col.deleteNote(olderId);
+							const keeper = existingNotes.get(keepId)!;
+							existingByFront.set(note.front, { id: keepId, back: keeper.back });
+						} else {
+							existingByFront.set(note.front, { id, back: note.back });
+						}
+					}
+					const vaultFronts = new Set<string>();
+					for (const { front, back } of cards) {
+						vaultFronts.add(front);
+						const existing = existingByFront.get(front);
+						if (!existing) {
+							col.addNote(front, back, deckId, notetypeId2);
+							result.added++;
+						} else if (existing.back !== back) {
+							col.updateNote(existing.id, front, back);
+							result.updated++;
+						}
+					}
+					if (deleteRemovedCards) {
+						for (const [front, { id }] of existingByFront) {
+							if (!vaultFronts.has(front)) {
+								col.deleteNote(id);
+								result.deleted++;
+							}
+						}
+					}
 				}
-			} catch (err) {
-				console.warn('obsidian-ankisync: media sync failed:', err);
-			} finally {
-				mediaClient.close();
+
+				// Now do a normal sync — schema matches so it should be NORMAL_SYNC
+				action = await syncClient.sync(col);
 			}
+
+			// --- Step 9: media sync (if any media was added) ---
+			if (allMedia.length > 0 || action !== SyncActionRequired.NO_CHANGES) {
+				const mediaClient = new MediaSyncClient(auth, this.mediaDir, this.mediaDbPath);
+				try {
+					await mediaClient.open();
+					const mediaResult = await mediaClient.sync();
+					if (mediaResult.downloaded > 0 || mediaResult.uploaded > 0 || mediaResult.deleted > 0) {
+						console.log(`[ankisync] media sync: downloaded=${mediaResult.downloaded} uploaded=${mediaResult.uploaded} deleted=${mediaResult.deleted}`);
+					}
+				} catch (err) {
+					console.warn('obsidian-ankisync: media sync failed:', err);
+				} finally {
+					mediaClient.close();
+				}
+			}
+		} finally {
+			col.close();
 		}
 
-		col.close();
 		return result;
 	}
 
